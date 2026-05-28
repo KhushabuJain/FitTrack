@@ -1,0 +1,177 @@
+import { Component, OnInit, ViewChild, ElementRef, AfterViewInit } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
+import { FitnessService } from './services/fitness.service';
+import { Chart, registerables } from 'chart.js';
+import { LucideAngularModule, Zap, Footprints, Flame, Heart, Construction, ChevronRight, Activity, Clock, Moon, Save, Settings, User as UserIcon, ArrowUpRight } from 'lucide-angular';
+
+Chart.register(...registerables);
+
+const lucideIcons = { 
+  Zap, Footprints, Flame, Heart, Construction, 
+  ChevronRight, Activity, Clock, Moon, Save, Settings, UserIcon, ArrowUpRight 
+};
+
+@Component({
+  selector: 'app-root',
+  standalone: true,
+  imports: [CommonModule, FormsModule, LucideAngularModule],
+  templateUrl: './app.component.html',
+  styleUrls: ['./app.component.css']
+})
+export class AppComponent implements OnInit, AfterViewInit {
+  @ViewChild('sleepChart') sleepChartCanvas!: ElementRef;
+  
+  readonly icons = lucideIcons;
+
+  summary: any = { steps: 0, calories: 0, heartRate: 0, lastSleep: 0, sleepHistory: [], weight: 0, height: 0 };
+  heartRateStream: any[] = [];
+  recommendations: any[] = [];
+  allUsers: any[] = [];
+  currentView: string = 'dashboard';
+  user: any = { name: '', email: '' };
+  private chart: any;
+
+  constructor(private fitnessService: FitnessService) {}
+
+  ngOnInit() {
+    const savedEmail = localStorage.getItem('fitedge_email');
+    if (savedEmail) {
+      this.user.email = savedEmail;
+    }
+    this.loadData();
+    this.listenToUpdates();
+    this.loadRecommendations();
+  }
+
+  ngAfterViewInit() {
+    // Chart will be initialized when data arrives
+  }
+
+  loadData() {
+    this.fitnessService.getSummary().subscribe({
+      next: (data) => {
+        if (data) {
+          this.summary = { ...this.summary, ...data };
+          this.user = { name: data.name, email: data.email };
+          this.initChart();
+          this.loadRecommendations();
+        }
+      },
+      error: (err) => console.log('Session inactive or not logged in')
+    });
+    
+    this.fitnessService.getGoogleFitData().subscribe({
+      next: (data) => {
+        if (data) {
+          this.summary = { ...this.summary, ...data };
+          this.user = { name: data.name, email: data.email };
+          this.initChart();
+          this.loadRecommendations();
+        }
+      },
+      error: (err) => console.log('Google Fit connection required')
+    });
+  }
+
+  loadRecommendations() {
+    this.fitnessService.getRecommendations(this.user.email).subscribe(data => {
+      this.recommendations = data;
+    });
+    this.fitnessService.getUsers().subscribe(data => {
+      this.allUsers = data;
+    });
+  }
+
+  saveStatus: string = '';
+
+  savePhysicalData() {
+    if (!this.user.email) {
+      this.saveStatus = 'Email required!';
+      setTimeout(() => this.saveStatus = '', 3000);
+      return;
+    }
+    this.saveStatus = 'Saving...';
+    localStorage.setItem('fitedge_email', this.user.email);
+    this.fitnessService.updatePhysicalData(this.summary.weight, this.summary.height, this.user.email).subscribe({
+      next: () => {
+        this.saveStatus = 'Saved successfully!';
+        this.loadRecommendations();
+        setTimeout(() => this.saveStatus = '', 3000);
+      },
+      error: () => {
+        this.saveStatus = 'Error saving data.';
+        setTimeout(() => this.saveStatus = '', 3000);
+      }
+    });
+  }
+
+  initChart() {
+    if (!this.sleepChartCanvas || !this.summary.sleepHistory.length) return;
+    
+    if (this.chart) this.chart.destroy();
+
+    const history = [...this.summary.sleepHistory].reverse();
+    const ctx = this.sleepChartCanvas.nativeElement.getContext('2d');
+    
+    this.chart = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: history.map((s: any) => new Date(s.date).toLocaleDateString(undefined, { weekday: 'short' })),
+        datasets: [{
+          label: 'Sleep Hours',
+          data: history.map((s: any) => s.hours),
+          backgroundColor: '#8b5cf6',
+          borderRadius: 8,
+          barThickness: 12
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: {
+          y: { display: false, beginAtZero: true },
+          x: { grid: { display: false }, border: { display: false }, ticks: { color: '#71717a' } }
+        }
+      }
+    });
+  }
+
+  connectGoogleFit() {
+    window.location.href = this.fitnessService.getLoginUrl();
+  }
+
+  listenToUpdates() {
+    this.fitnessService.updates$.subscribe(update => {
+      if (update) {
+        this.summary.heartRate = update.heartRate;
+        this.summary.steps += update.steps;
+        this.summary.calories += update.calories;
+
+        const now = new Date().toLocaleTimeString();
+        this.heartRateStream.push({ time: now, value: update.heartRate });
+        if (this.heartRateStream.length > 30) this.heartRateStream.shift();
+      }
+    });
+  }
+
+  setView(view: string) {
+    this.currentView = view;
+  }
+
+  get bmi(): number {
+    if (this.summary.weight > 0 && this.summary.height > 0) {
+      return this.summary.weight / ((this.summary.height / 100) * (this.summary.height / 100));
+    }
+    return 0;
+  }
+
+  get bmiCategory(): string {
+    const val = this.bmi;
+    if (val === 0) return 'Enter details';
+    if (val < 18.5) return 'Underweight';
+    if (val < 25) return 'Normal Weight';
+    if (val < 30) return 'Overweight';
+    return 'Obese';
+  }
+}
